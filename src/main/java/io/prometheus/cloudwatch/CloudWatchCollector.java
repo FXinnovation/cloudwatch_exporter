@@ -60,6 +60,18 @@ public class CloudWatchCollector extends Collector {
       Map<String,List<String>> awsDimensionSelectRegex;
       String help;
       boolean cloudwatchTimestamp;
+      AWSTagFilter awsTagFilter;
+    }
+
+    static class AWSTagFilter {
+      String resourceTypeFilter;
+      String resourceIdDimension;
+      List<Tag> tagFilters;
+    }
+
+    static class Tag {
+      String key;
+      List<String> values;
     }
 
     ActiveConfig activeConfig = new ActiveConfig();
@@ -211,6 +223,31 @@ public class CloudWatchCollector extends Collector {
               rule.cloudwatchTimestamp = (Boolean)yamlMetricRule.get("set_timestamp");
           } else {
               rule.cloudwatchTimestamp = defaultCloudwatchTimestamp;
+          }
+
+          if (yamlMetricRule.containsKey("aws_tag_filter")) {
+            Map<String, Object> yamlAwsTagFilter = (Map<String, Object>) yamlMetricRule.get("aws_tag_filter");
+            if (!yamlAwsTagFilter.containsKey("resource_type_filter") || !yamlAwsTagFilter.containsKey("resource_id_dimension") ||
+              !yamlAwsTagFilter.containsKey("tag_filters")) {
+              throw new IllegalArgumentException("Must provide resource_type_filter, resource_id_dimension and tag_filters");
+            }
+            AWSTagFilter awsTagFilter = new AWSTagFilter();
+            rule.awsTagFilter = awsTagFilter;
+
+            awsTagFilter.resourceTypeFilter = (String)yamlMetricRule.get("resource_type_filter");
+            awsTagFilter.resourceIdDimension = (String)yamlMetricRule.get("resource_id_dimension");
+            List<Tag> tagFilters = new ArrayList<Tag>();
+            awsTagFilter.tagFilters = tagFilters;
+
+            for (Map<String,Object> yamlTagFilter : (List<Map<String,Object>>) config.get("tag_filters")) {
+              if (!yamlTagFilter.containsKey("key") || !yamlTagFilter.containsKey("values")) {
+                throw new IllegalArgumentException("Must provide key and values");
+              }
+              Tag tagfilter = new Tag();
+              tagfilter.key = (String)yamlTagFilter.get("key");
+              tagfilter.values = (List<String>)yamlTagFilter.get("values");
+              tagFilters.add(tagfilter);
+            }
           }
         }
 
