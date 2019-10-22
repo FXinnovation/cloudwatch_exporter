@@ -236,7 +236,7 @@ public class CloudWatchCollector extends Collector {
             List<Tag> tagFilters = new ArrayList<Tag>();
             awsTagFilter.tagFilters = tagFilters;
 
-            for (Map<String,Object> yamlTagFilter : (List<Map<String,Object>>) config.get("tag_filters")) {
+            for (Map<String,Object> yamlTagFilter : (List<Map<String,Object>>) yamlAwsTagFilter.get("tag_filters")) {
               if (!yamlTagFilter.containsKey("key") || !yamlTagFilter.containsKey("values")) {
                 throw new IllegalArgumentException("Must provide key and values");
               }
