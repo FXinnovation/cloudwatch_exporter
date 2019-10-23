@@ -24,7 +24,6 @@ import io.prometheus.client.Counter;
 
 import java.io.FileReader;
 import java.io.Reader;
-import java.security.Provider;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -66,10 +65,10 @@ public class CloudWatchCollector extends Collector {
       Map<String,List<String>> awsDimensionSelectRegex;
       String help;
       boolean cloudwatchTimestamp;
-      AWSTagFilter awsTagFilter;
+      AWSTagSelect awsTagSelect;
     }
 
-    static class AWSTagFilter {
+    static class AWSTagSelect {
       String resourceTypeFilter;
       String resourceIdDimension;
       List<Tag> tagFilters;
@@ -231,21 +230,21 @@ public class CloudWatchCollector extends Collector {
               rule.cloudwatchTimestamp = defaultCloudwatchTimestamp;
           }
 
-          if (yamlMetricRule.containsKey("aws_tag_filter")) {
-            Map<String, Object> yamlAwsTagFilter = (Map<String, Object>) yamlMetricRule.get("aws_tag_filter");
-            if (!yamlAwsTagFilter.containsKey("resource_type_filter") || !yamlAwsTagFilter.containsKey("resource_id_dimension") ||
-              !yamlAwsTagFilter.containsKey("tag_filters")) {
+          if (yamlMetricRule.containsKey("aws_tag_select")) {
+            Map<String, Object> yamlAwsTagSelect = (Map<String, Object>) yamlMetricRule.get("aws_tag_select");
+            if (!yamlAwsTagSelect.containsKey("resource_type_filter") || !yamlAwsTagSelect.containsKey("resource_id_dimension") ||
+              !yamlAwsTagSelect.containsKey("tag_filters")) {
               throw new IllegalArgumentException("Must provide resource_type_filter, resource_id_dimension and tag_filters");
             }
-            AWSTagFilter awsTagFilter = new AWSTagFilter();
-            rule.awsTagFilter = awsTagFilter;
+            AWSTagSelect awsTagSelect = new AWSTagSelect();
+            rule.awsTagSelect = awsTagSelect;
 
-            awsTagFilter.resourceTypeFilter = (String)yamlMetricRule.get("resource_type_filter");
-            awsTagFilter.resourceIdDimension = (String)yamlMetricRule.get("resource_id_dimension");
+            awsTagSelect.resourceTypeFilter = (String)yamlMetricRule.get("resource_type_filter");
+            awsTagSelect.resourceIdDimension = (String)yamlMetricRule.get("resource_id_dimension");
             List<Tag> tagFilters = new ArrayList<Tag>();
-            awsTagFilter.tagFilters = tagFilters;
+            awsTagSelect.tagFilters = tagFilters;
 
-            for (Map<String,Object> yamlTagFilter : (List<Map<String,Object>>) yamlAwsTagFilter.get("tag_filters")) {
+            for (Map<String,Object> yamlTagFilter : (List<Map<String,Object>>) yamlAwsTagSelect.get("tag_filters")) {
               if (!yamlTagFilter.containsKey("key") || !yamlTagFilter.containsKey("values")) {
                 throw new IllegalArgumentException("Must provide key and values");
               }
