@@ -1,5 +1,6 @@
 package io.prometheus.cloudwatch;
 
+import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.STSAssumeRoleSessionCredentialsProvider;
 import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration;
 import com.amazonaws.regions.Region;
@@ -15,11 +16,15 @@ import com.amazonaws.services.cloudwatch.model.GetMetricStatisticsResult;
 import com.amazonaws.services.cloudwatch.model.ListMetricsRequest;
 import com.amazonaws.services.cloudwatch.model.ListMetricsResult;
 import com.amazonaws.services.cloudwatch.model.Metric;
+import com.amazonaws.services.resourcegroupstaggingapi.AWSResourceGroupsTaggingAPI;
+import com.amazonaws.services.resourcegroupstaggingapi.AWSResourceGroupsTaggingAPIClientBuilder;
+
 import io.prometheus.client.Collector;
 import io.prometheus.client.Counter;
 
 import java.io.FileReader;
 import java.io.Reader;
+import java.security.Provider;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -39,7 +44,8 @@ public class CloudWatchCollector extends Collector {
 
     static class ActiveConfig implements Cloneable {
         ArrayList<MetricRule> rules;
-        AmazonCloudWatch client;
+        AmazonCloudWatch cloudWatchClient;
+        AWSResourceGroupsTaggingAPI taggingClient;
 
         @Override
         public Object clone() throws CloneNotSupportedException {
@@ -86,19 +92,19 @@ public class CloudWatchCollector extends Collector {
             "ReadThrottleEvents", "WriteThrottleEvents");
 
     public CloudWatchCollector(Reader in) throws IOException {
-        loadConfig(in, null);
+        loadConfig(in, null, null);
     }
     public CloudWatchCollector(String yamlConfig) {
-        this((Map<String, Object>)new Yaml().load(yamlConfig),null);
+        this((Map<String, Object>)new Yaml().load(yamlConfig), null, null);
     }
 
     /* For unittests. */
-    protected CloudWatchCollector(String jsonConfig, AmazonCloudWatch client) {
-        this((Map<String, Object>)new Yaml().load(jsonConfig), client);
+    protected CloudWatchCollector(String jsonConfig, AmazonCloudWatch cloudWatchClient, AWSResourceGroupsTaggingAPI taggingClient) {
+        this((Map<String, Object>)new Yaml().load(jsonConfig), cloudWatchClient, taggingClient);
     }
 
-    private CloudWatchCollector(Map<String, Object> config, AmazonCloudWatch client) {
-        loadConfig(config, client);
+    private CloudWatchCollector(Map<String, Object> config, AmazonCloudWatch cloudWatchClient, AWSResourceGroupsTaggingAPI taggingClient) {
+        loadConfig(config, cloudWatchClient, taggingClient);
     }
 
     protected void reloadConfig() throws IOException {
@@ -106,7 +112,7 @@ public class CloudWatchCollector extends Collector {
         FileReader reader = null;
         try {
           reader = new FileReader(WebServer.configFilePath);
-          loadConfig(reader, activeConfig.client);
+          loadConfig(reader, activeConfig.cloudWatchClient, activeConfig.taggingClient);
         } finally {
           if (reader != null) {
             reader.close();
@@ -115,11 +121,11 @@ public class CloudWatchCollector extends Collector {
         }
     }
 
-    protected void loadConfig(Reader in, AmazonCloudWatch client) throws IOException {
-        loadConfig((Map<String, Object>)new Yaml().load(in), client);
+    protected void loadConfig(Reader in, AmazonCloudWatch cloudWatchClient, AWSResourceGroupsTaggingAPI taggingClient) throws IOException {
+        loadConfig((Map<String, Object>)new Yaml().load(in), cloudWatchClient, taggingClient);
     }
 
-    private void loadConfig(Map<String, Object> config, AmazonCloudWatch client) {
+    private void loadConfig(Map<String, Object> config, AmazonCloudWatch cloudWatchClient, AWSResourceGroupsTaggingAPI taggingClient) {
         if(config == null) {  // Yaml config empty, set config to empty map.
             config = new HashMap<String, Object>();
         }
@@ -142,29 +148,29 @@ public class CloudWatchCollector extends Collector {
             defaultCloudwatchTimestamp = (Boolean)config.get("set_timestamp");
         }
 
-        if (client == null) {
+        if (cloudWatchClient == null) {
           AmazonCloudWatchClientBuilder clientBuilder = AmazonCloudWatchClientBuilder.standard();
-
+          
           if (config.containsKey("role_arn")) {
-            STSAssumeRoleSessionCredentialsProvider credentialsProvider = new STSAssumeRoleSessionCredentialsProvider.Builder(
-              (String) config.get("role_arn"),
-              "cloudwatch_exporter"
-            ).build();
-
-            clientBuilder.setCredentials(credentialsProvider);
+            clientBuilder.setCredentials(getRoleCredentialProvider(config));
           }
-
-          Region region = RegionUtils.getRegion((String) config.get("region"));
-          if (region == null) {
-            region = Regions.getCurrentRegion();
-            if (region == null) {
-              throw new IllegalArgumentException("No region provided and EC2 metadata failed");
-            }
-          }
+          Region region = getRegion(config);
           clientBuilder.setEndpointConfiguration(new EndpointConfiguration(getMonitoringEndpoint(region), region.getName()));
-
-          client = clientBuilder.build();
+          
+          cloudWatchClient = clientBuilder.build();
         }
+        
+        if (taggingClient == null) {
+        	AWSResourceGroupsTaggingAPIClientBuilder clientBuilder = AWSResourceGroupsTaggingAPIClientBuilder.standard();
+        	
+            if (config.containsKey("role_arn")) {
+                clientBuilder.setCredentials(getRoleCredentialProvider(config));
+            }
+        	clientBuilder.setRegion(getRegion(config).getName());
+        	
+        	taggingClient = clientBuilder.build();
+        }
+        
 
         if (!config.containsKey("metrics")) {
           throw new IllegalArgumentException("Must provide metrics");
@@ -251,16 +257,35 @@ public class CloudWatchCollector extends Collector {
           }
         }
 
-        loadConfig(rules, client);
+        loadConfig(rules, cloudWatchClient);
     }
 
-    private void loadConfig(ArrayList<MetricRule> rules, AmazonCloudWatch client) {
+    private void loadConfig(ArrayList<MetricRule> rules, AmazonCloudWatch cloudWatchClient) {
         synchronized (activeConfig) {
-            activeConfig.client = client;
+            activeConfig.cloudWatchClient = cloudWatchClient;
             activeConfig.rules = rules;
         }
     }
 
+    private AWSCredentialsProvider getRoleCredentialProvider(Map<String, Object> config) {
+        STSAssumeRoleSessionCredentialsProvider credentialsProvider = new STSAssumeRoleSessionCredentialsProvider.Builder(
+                (String) config.get("role_arn"),
+                "cloudwatch_exporter"
+              ).build();
+        return credentialsProvider;
+    }
+    
+    private Region getRegion(Map<String, Object> config) {
+        Region region = RegionUtils.getRegion((String) config.get("region"));
+        if (region == null) {
+          region = Regions.getCurrentRegion();
+          if (region == null) {
+            throw new IllegalArgumentException("No region provided and EC2 metadata failed");
+          }
+        }
+        return region;
+    }
+    
     public String getMonitoringEndpoint(Region region) {
       return "https://" + region.getServiceEndpoint("monitoring");
     }
@@ -465,10 +490,10 @@ public class CloudWatchCollector extends Collector {
             baseName += "_index";
         }
 
-        for (List<Dimension> dimensions: getDimensions(rule, config.client)) {
+        for (List<Dimension> dimensions: getDimensions(rule, config.cloudWatchClient)) {
           request.setDimensions(dimensions);
 
-          GetMetricStatisticsResult result = config.client.getMetricStatistics(request);
+          GetMetricStatisticsResult result = config.cloudWatchClient.getMetricStatistics(request);
           cloudwatchRequests.labels("getMetricStatistics", rule.awsNamespace).inc();
           Datapoint dp = getNewestDatapoint(result.getDatapoints());
           if (dp == null) {
