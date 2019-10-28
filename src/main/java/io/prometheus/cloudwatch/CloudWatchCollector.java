@@ -18,6 +18,11 @@ import com.amazonaws.services.cloudwatch.model.ListMetricsResult;
 import com.amazonaws.services.cloudwatch.model.Metric;
 import com.amazonaws.services.resourcegroupstaggingapi.AWSResourceGroupsTaggingAPI;
 import com.amazonaws.services.resourcegroupstaggingapi.AWSResourceGroupsTaggingAPIClientBuilder;
+import com.amazonaws.services.resourcegroupstaggingapi.model.GetResourcesRequest;
+import com.amazonaws.services.resourcegroupstaggingapi.model.GetResourcesResult;
+import com.amazonaws.services.resourcegroupstaggingapi.model.ResourceTagMapping;
+import com.amazonaws.services.resourcegroupstaggingapi.model.Tag;
+import com.amazonaws.services.resourcegroupstaggingapi.model.TagFilter;
 
 import io.prometheus.client.Collector;
 import io.prometheus.client.Counter;
@@ -69,16 +74,21 @@ public class CloudWatchCollector extends Collector {
     }
 
     static class AWSTagSelect {
-      String resourceTypeFilter;
+      String resourceTypeSelection;
       String resourceIdDimension;
-      List<Tag> tagFilters;
+      List<TagSelection> tagSelections;
     }
 
-    static class Tag {
+    static class TagSelection {
       String key;
       List<String> values;
     }
 
+    static class TaggingAPIResult {
+      Map<String,List<String>> tagBasedDimensionSelection;
+      List<Tag> tags;
+    }
+    
     ActiveConfig activeConfig = new ActiveConfig();
 
     private static final Counter cloudwatchRequests = Counter.build()
@@ -157,14 +167,13 @@ public class CloudWatchCollector extends Collector {
         }
         
         if (taggingClient == null) {
-        	AWSResourceGroupsTaggingAPIClientBuilder clientBuilder = AWSResourceGroupsTaggingAPIClientBuilder.standard();
+            AWSResourceGroupsTaggingAPIClientBuilder clientBuilder = AWSResourceGroupsTaggingAPIClientBuilder.standard();
         	
             if (config.containsKey("role_arn")) {
                 clientBuilder.setCredentials(getRoleCredentialProvider(config));
             }
-        	clientBuilder.setRegion(getRegion(config).getName());
-        	
-        	taggingClient = clientBuilder.build();
+            clientBuilder.setRegion(getRegion(config).getName());
+            taggingClient = clientBuilder.build();
         }
         
 
@@ -229,36 +238,37 @@ public class CloudWatchCollector extends Collector {
 
           if (yamlMetricRule.containsKey("aws_tag_select")) {
             Map<String, Object> yamlAwsTagSelect = (Map<String, Object>) yamlMetricRule.get("aws_tag_select");
-            if (!yamlAwsTagSelect.containsKey("resource_type_filter") || !yamlAwsTagSelect.containsKey("resource_id_dimension") ||
-              !yamlAwsTagSelect.containsKey("tag_filters")) {
-              throw new IllegalArgumentException("Must provide resource_type_filter, resource_id_dimension and tag_filters");
+            if (!yamlAwsTagSelect.containsKey("resource_type_selection") || !yamlAwsTagSelect.containsKey("resource_id_dimension") ||
+              !yamlAwsTagSelect.containsKey("tag_selections")) {
+              throw new IllegalArgumentException("Must provide resource_type_selection, resource_id_dimension and tag_selections");
             }
             AWSTagSelect awsTagSelect = new AWSTagSelect();
             rule.awsTagSelect = awsTagSelect;
 
-            awsTagSelect.resourceTypeFilter = (String)yamlMetricRule.get("resource_type_filter");
-            awsTagSelect.resourceIdDimension = (String)yamlMetricRule.get("resource_id_dimension");
-            List<Tag> tagFilters = new ArrayList<Tag>();
-            awsTagSelect.tagFilters = tagFilters;
+            awsTagSelect.resourceTypeSelection = (String)yamlAwsTagSelect.get("resource_type_selection");
+            awsTagSelect.resourceIdDimension = (String)yamlAwsTagSelect.get("resource_id_dimension");
+            List<TagSelection> tagSelections = new ArrayList<TagSelection>();
+            awsTagSelect.tagSelections = tagSelections;
 
-            for (Map<String,Object> yamlTagFilter : (List<Map<String,Object>>) yamlAwsTagSelect.get("tag_filters")) {
-              if (!yamlTagFilter.containsKey("key") || !yamlTagFilter.containsKey("values")) {
-                throw new IllegalArgumentException("Must provide key and values");
+            for (Map<String,Object> yamlTagSelection : (List<Map<String,Object>>) yamlAwsTagSelect.get("tag_selections")) {
+              if (!yamlTagSelection.containsKey("key") || !yamlTagSelection.containsKey("values")) {
+                throw new IllegalArgumentException("Must provide key and values for tag_selections");
               }
-              Tag tagfilter = new Tag();
-              tagfilter.key = (String)yamlTagFilter.get("key");
-              tagfilter.values = (List<String>)yamlTagFilter.get("values");
-              tagFilters.add(tagfilter);
+              TagSelection tagSelection = new TagSelection();
+              tagSelection.key = (String)yamlTagSelection.get("key");
+              tagSelection.values = (List<String>)yamlTagSelection.get("values");
+              tagSelections.add(tagSelection);
             }
           }
         }
 
-        loadConfig(rules, cloudWatchClient);
+        loadConfig(rules, cloudWatchClient, taggingClient);
     }
 
-    private void loadConfig(ArrayList<MetricRule> rules, AmazonCloudWatch cloudWatchClient) {
+    private void loadConfig(ArrayList<MetricRule> rules, AmazonCloudWatch cloudWatchClient, AWSResourceGroupsTaggingAPI taggingClient) {
         synchronized (activeConfig) {
             activeConfig.cloudWatchClient = cloudWatchClient;
+            activeConfig.taggingClient = taggingClient;
             activeConfig.rules = rules;
         }
     }
@@ -283,21 +293,66 @@ public class CloudWatchCollector extends Collector {
     }
     
     public String getMonitoringEndpoint(Region region) {
-      return "https://" + region.getServiceEndpoint("monitoring");
+        return "https://" + region.getServiceEndpoint("monitoring");
     }
 
-    private List<List<Dimension>> getDimensions(MetricRule rule, AmazonCloudWatch client) {
+    private List<ResourceTagMapping> getResourceTagMappings(MetricRule rule, AWSResourceGroupsTaggingAPI taggingClient) {
+	List<ResourceTagMapping> resourceTagMappings = new ArrayList<ResourceTagMapping>();
+	if(rule.awsTagSelect == null) {
+            return resourceTagMappings;
+        }
+	
+        List<TagFilter> tagFilters = new ArrayList<TagFilter>();
+        for (TagSelection tagSelection : rule.awsTagSelect.tagSelections) {
+            tagFilters.add(new TagFilter().withKey(tagSelection.key).withValues(tagSelection.values));
+        }
+        
+        GetResourcesRequest request = new GetResourcesRequest().withTagFilters(tagFilters).withResourceTypeFilters(rule.awsTagSelect.resourceTypeSelection);
+        String paginationToken = "";
+        do {
+          request.setPaginationToken(paginationToken);
+          
+          GetResourcesResult result = taggingClient.getResources(request);
+          resourceTagMappings.addAll(result.getResourceTagMappingList());
+          
+          paginationToken = result.getPaginationToken();
+        } while (paginationToken != null && paginationToken != "");
+     
+        return resourceTagMappings;
+    }
+    
+    private List<String> extractResourceIds(List<ResourceTagMapping> resourceTagMappings) {
+	List<String> resourceIds = new ArrayList<String>();
+	for (ResourceTagMapping resourceTagMapping : resourceTagMappings) {
+	    resourceIds.add(extractResourceId(resourceTagMapping.getResourceARN()));
+	}
+	return resourceIds;
+    }
+    
+    private String extractResourceId(String arn) {
+	// ARN parsing is based on https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html
+	String[] arnArray = arn.split(":");
+	String resourceId = arnArray[arnArray.length-1];
+	if(resourceId.contains("/")) {
+	    String[] resourceArray = resourceId.split("/", 2);
+	    resourceId = resourceArray[resourceArray.length-1];
+	}
+	return resourceId;
+    }
+    
+    private List<List<Dimension>> getDimensions(MetricRule rule, List<String> tagBasedResourceIds, AmazonCloudWatch cloudWatchClient) {
         if (
                 rule.awsDimensions != null &&
                 rule.awsDimensionSelect != null &&
                 rule.awsDimensions.size() > 0 &&
                 rule.awsDimensions.size() == rule.awsDimensionSelect.size() &&
-                rule.awsDimensionSelect.keySet().containsAll(rule.awsDimensions)
+                rule.awsDimensionSelect.keySet().containsAll(rule.awsDimensions) &&
+                rule.awsTagSelect == null
         ) {
             // The full list of dimensions is known so no need to request it from cloudwatch.
             return permuteDimensions(rule.awsDimensions, rule.awsDimensionSelect);
         } else {
-            return listDimensions(rule, client);
+            return listDimensions(rule, tagBasedResourceIds, cloudWatchClient);
         }
     }
 
@@ -324,7 +379,7 @@ public class CloudWatchCollector extends Collector {
         return result;
     }
 
-    private List<List<Dimension>> listDimensions(MetricRule rule, AmazonCloudWatch client) {
+    private List<List<Dimension>> listDimensions(MetricRule rule, List<String> tagBasedResourceIds, AmazonCloudWatch cloudWatchClient) {
       List<List<Dimension>> dimensions = new ArrayList<List<Dimension>>();
       if (rule.awsDimensions == null) {
         dimensions.add(new ArrayList<Dimension>());
@@ -343,7 +398,7 @@ public class CloudWatchCollector extends Collector {
       String nextToken = null;
       do {
         request.setNextToken(nextToken);
-        ListMetricsResult result = client.listMetrics(request);
+        ListMetricsResult result = cloudWatchClient.listMetrics(request);
         cloudwatchRequests.labels("listMetrics", rule.awsNamespace).inc();
         for (Metric metric: result.getMetrics()) {
           if (metric.getDimensions().size() != dimensionFilters.size()) {
@@ -351,7 +406,7 @@ public class CloudWatchCollector extends Collector {
             // so filter them out.
             continue;
           }
-          if (useMetric(rule, metric)) {
+          if (useMetric(rule, tagBasedResourceIds, metric)) {
             dimensions.add(metric.getDimensions());
           }
         }
@@ -362,10 +417,10 @@ public class CloudWatchCollector extends Collector {
     }
 
     /**
-     * Check if a metric should be used according to `aws_dimension_select` or `aws_dimension_select_regex`
+     * Check if a metric should be used according to `aws_dimension_select`, `aws_dimension_select_regex` or dynamic `aws_tag_select`
      */
-    private boolean useMetric(MetricRule rule, Metric metric) {
-      if (rule.awsDimensionSelect == null && rule.awsDimensionSelectRegex == null) {
+    private boolean useMetric(MetricRule rule, List<String> tagBasedResourceIds, Metric metric) {
+      if (rule.awsDimensionSelect == null && rule.awsDimensionSelectRegex == null && rule.awsTagSelect == null) {
         return true;
       }
       if (rule.awsDimensionSelect != null  && metricsIsInAwsDimensionSelect(rule, metric)) {
@@ -373,6 +428,9 @@ public class CloudWatchCollector extends Collector {
       }
       if (rule.awsDimensionSelectRegex != null  && metricIsInAwsDimensionSelectRegex(rule, metric)) {
         return true;
+      }
+      if (rule.awsTagSelect != null  && metricIsInAwsTagSelect(rule, tagBasedResourceIds, metric)) {
+	return true;
       }
       return false;
     }
@@ -425,6 +483,22 @@ public class CloudWatchCollector extends Collector {
       return false;
     }
 
+    /**
+     * Check if a metric is matched in `aws_tag_select`
+     */
+    private boolean metricIsInAwsTagSelect(MetricRule rule, List<String> tagBasedResourceIds, Metric metric) {
+      for (Dimension dimension : metric.getDimensions()) {
+        String dimensionName = dimension.getName();
+        String dimensionValue = dimension.getValue();
+        if (dimensionName.equals(rule.awsTagSelect.resourceIdDimension)) {
+          if (!tagBasedResourceIds.contains(dimensionValue)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+    
     private Datapoint getNewestDatapoint(java.util.List<Datapoint> datapoints) {
       Datapoint newest = null;
       for (Datapoint d: datapoints) {
@@ -486,7 +560,10 @@ public class CloudWatchCollector extends Collector {
             baseName += "_index";
         }
 
-        for (List<Dimension> dimensions: getDimensions(rule, config.cloudWatchClient)) {
+        List<ResourceTagMapping> resourceTagMappings = getResourceTagMappings(rule, config.taggingClient);
+        List<String> tagBasedResourceIds = extractResourceIds(resourceTagMappings);
+        
+        for (List<Dimension> dimensions: getDimensions(rule, tagBasedResourceIds, config.cloudWatchClient)) {
           request.setDimensions(dimensions);
 
           GetMetricStatisticsResult result = config.cloudWatchClient.getMetricStatistics(request);
