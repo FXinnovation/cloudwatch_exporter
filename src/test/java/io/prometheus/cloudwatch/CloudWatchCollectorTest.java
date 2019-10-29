@@ -477,7 +477,7 @@ public class CloudWatchCollectorTest {
   public void testTagSelectEC2() throws Exception {
     // Testing "aws_tag_select" with an EC2
     new CloudWatchCollector(
-        "---\nregion: reg\nmetrics:\n- aws_namespace: AWS/EC2\n  aws_metric_name: CPUUtilization\n  aws_dimensions:\n  - InstanceId\n  aws_tag_select:\n    resource_type_selection: \"ec2:instance\"\n    resource_id_dimension: InstanceId\n    tag_selections:\n      - key: Monitoring\n        values: [enabled]\n", 
+        "---\nregion: reg\nmetrics:\n- aws_namespace: AWS/EC2\n  aws_metric_name: CPUUtilization\n  aws_dimensions:\n  - InstanceId\n  aws_tag_select:\n    resource_type_selection: \"ec2:instance\"\n    resource_id_dimension: InstanceId\n    tag_selections:\n      Monitoring: [enabled]\n", 
         cloudWatchClient, taggingClient).register(registry);
     
     Mockito.when(taggingClient.getResources((GetResourcesRequest)argThat(
@@ -511,7 +511,7 @@ public class CloudWatchCollectorTest {
   public void testTagSelectALB() throws Exception {
     // Testing "aws_tag_select" with an ALB, which have a fairly complex ARN 
     new CloudWatchCollector(
-        "---\nregion: reg\nmetrics:\n- aws_namespace: AWS/ApplicationELB\n  aws_metric_name: RequestCount\n  aws_dimensions:\n  - AvailabilityZone\n  - LoadBalancer\n  aws_tag_select:\n    resource_type_selection: \"elasticloadbalancing:loadbalancer/app\"\n    resource_id_dimension: LoadBalancer\n    tag_selections:\n      - key: Monitoring\n        values: [enabled]\n", 
+        "---\nregion: reg\nmetrics:\n- aws_namespace: AWS/ApplicationELB\n  aws_metric_name: RequestCount\n  aws_dimensions:\n  - AvailabilityZone\n  - LoadBalancer\n  aws_tag_select:\n    resource_type_selection: \"elasticloadbalancing:loadbalancer/app\"\n    resource_id_dimension: LoadBalancer\n    tag_selections:\n      Monitoring: [enabled]\n", 
         cloudWatchClient, taggingClient).register(registry);
     
     Mockito.when(taggingClient.getResources((GetResourcesRequest)argThat(
@@ -551,7 +551,7 @@ public class CloudWatchCollectorTest {
   public void testTagSelectUsesPaginationToken() throws Exception {
     // Testing "aws_tag_select" with an EC2
     new CloudWatchCollector(
-        "---\nregion: reg\nmetrics:\n- aws_namespace: AWS/EC2\n  aws_metric_name: CPUUtilization\n  aws_dimensions:\n  - InstanceId\n  aws_tag_select:\n    resource_type_selection: \"ec2:instance\"\n    resource_id_dimension: InstanceId\n    tag_selections:\n      - key: Monitoring\n        values: [enabled]\n", 
+        "---\nregion: reg\nmetrics:\n- aws_namespace: AWS/EC2\n  aws_metric_name: CPUUtilization\n  aws_dimensions:\n  - InstanceId\n  aws_tag_select:\n    resource_type_selection: \"ec2:instance\"\n    resource_id_dimension: InstanceId\n    tag_selections:\n      Monitoring: [enabled]\n", 
         cloudWatchClient, taggingClient).register(registry);
     
     Mockito.when(taggingClient.getResources((GetResourcesRequest)argThat(
