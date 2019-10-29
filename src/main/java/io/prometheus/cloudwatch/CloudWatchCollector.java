@@ -32,6 +32,7 @@ import java.io.Reader;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Set;
@@ -276,9 +277,8 @@ public class CloudWatchCollector extends Collector {
     }
 
     private List<ResourceTagMapping> getResourceTagMappings(MetricRule rule, AWSResourceGroupsTaggingAPI taggingClient) {
-      List<ResourceTagMapping> resourceTagMappings = new ArrayList<ResourceTagMapping>();
       if (rule.awsTagSelect == null) {
-        return resourceTagMappings;
+        return Collections.emptyList();
       }
 
       List<TagFilter> tagFilters = new ArrayList<TagFilter>();
@@ -286,6 +286,7 @@ public class CloudWatchCollector extends Collector {
         tagFilters.add(new TagFilter().withKey(entry.getKey()).withValues(entry.getValue()));
       }
 
+      List<ResourceTagMapping> resourceTagMappings = new ArrayList<ResourceTagMapping>();
       GetResourcesRequest request = new GetResourcesRequest().withTagFilters(tagFilters).withResourceTypeFilters(rule.awsTagSelect.resourceTypeSelection);
       String paginationToken = "";
       do {
