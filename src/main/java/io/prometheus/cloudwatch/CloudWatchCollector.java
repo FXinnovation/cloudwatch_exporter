@@ -301,22 +301,17 @@ public class CloudWatchCollector extends Collector {
     private List<String> extractResourceIds(List<ResourceTagMapping> resourceTagMappings) {
       List<String> resourceIds = new ArrayList<String>();
       for (ResourceTagMapping resourceTagMapping : resourceTagMappings) {
-        resourceIds.add(extractResourceId(resourceTagMapping.getResourceARN()));
+        // ARN parsing is based on https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html
+        String[] arnArray = resourceTagMapping.getResourceARN().split(":");
+        String resourceId = arnArray[arnArray.length - 1];
+        if (resourceId.contains("/")) {
+          String[] resourceArray = resourceId.split("/", 2);
+          resourceId = resourceArray[resourceArray.length - 1];
+        }
+        resourceIds.add(resourceId);
       }
       return resourceIds;
     }
-    
-  private String extractResourceId(String arn) {
-    // ARN parsing is based on https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html
-    String[] arnArray = arn.split(":");
-    String resourceId = arnArray[arnArray.length - 1];
-    if (resourceId.contains("/")) {
-      String[] resourceArray = resourceId.split("/", 2);
-      resourceId = resourceArray[resourceArray.length - 1];
-    }
-
-    return resourceId;
-  }
     
     private List<List<Dimension>> getDimensions(MetricRule rule, List<String> tagBasedResourceIds, AmazonCloudWatch cloudWatchClient) {
         if (
