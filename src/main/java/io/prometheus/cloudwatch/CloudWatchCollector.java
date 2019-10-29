@@ -83,11 +83,6 @@ public class CloudWatchCollector extends Collector {
       String key;
       List<String> values;
     }
-
-    static class TaggingAPIResult {
-      Map<String,List<String>> tagBasedDimensionSelection;
-      List<Tag> tags;
-    }
     
     ActiveConfig activeConfig = new ActiveConfig();
 
