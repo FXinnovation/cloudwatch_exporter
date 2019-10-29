@@ -21,7 +21,6 @@ import com.amazonaws.services.resourcegroupstaggingapi.AWSResourceGroupsTaggingA
 import com.amazonaws.services.resourcegroupstaggingapi.model.GetResourcesRequest;
 import com.amazonaws.services.resourcegroupstaggingapi.model.GetResourcesResult;
 import com.amazonaws.services.resourcegroupstaggingapi.model.ResourceTagMapping;
-import com.amazonaws.services.resourcegroupstaggingapi.model.Tag;
 import com.amazonaws.services.resourcegroupstaggingapi.model.TagFilter;
 
 import io.prometheus.client.Collector;
