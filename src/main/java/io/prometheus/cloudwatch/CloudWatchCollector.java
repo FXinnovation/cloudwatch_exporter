@@ -146,26 +146,25 @@ public class CloudWatchCollector extends Collector {
 
         if (cloudWatchClient == null) {
           AmazonCloudWatchClientBuilder clientBuilder = AmazonCloudWatchClientBuilder.standard();
-          
+
           if (config.containsKey("role_arn")) {
             clientBuilder.setCredentials(getRoleCredentialProvider(config));
           }
           Region region = getRegion(config);
           clientBuilder.setEndpointConfiguration(new EndpointConfiguration(getMonitoringEndpoint(region), region.getName()));
-          
+
           cloudWatchClient = clientBuilder.build();
         }
         
         if (taggingClient == null) {
-            AWSResourceGroupsTaggingAPIClientBuilder clientBuilder = AWSResourceGroupsTaggingAPIClientBuilder.standard();
-        	
-            if (config.containsKey("role_arn")) {
-                clientBuilder.setCredentials(getRoleCredentialProvider(config));
-            }
-            clientBuilder.setRegion(getRegion(config).getName());
-            taggingClient = clientBuilder.build();
+          AWSResourceGroupsTaggingAPIClientBuilder clientBuilder = AWSResourceGroupsTaggingAPIClientBuilder.standard();
+
+          if (config.containsKey("role_arn")) {
+            clientBuilder.setCredentials(getRoleCredentialProvider(config));
+          }
+          clientBuilder.setRegion(getRegion(config).getName());
+          taggingClient = clientBuilder.build();
         }
-        
 
         if (!config.containsKey("metrics")) {
           throw new IllegalArgumentException("Must provide metrics");
@@ -253,72 +252,70 @@ public class CloudWatchCollector extends Collector {
     }
 
     private AWSCredentialsProvider getRoleCredentialProvider(Map<String, Object> config) {
-        STSAssumeRoleSessionCredentialsProvider credentialsProvider = new STSAssumeRoleSessionCredentialsProvider.Builder(
-                (String) config.get("role_arn"),
-                "cloudwatch_exporter"
-              ).build();
-        return credentialsProvider;
+      STSAssumeRoleSessionCredentialsProvider credentialsProvider = new STSAssumeRoleSessionCredentialsProvider.Builder(
+	  (String) config.get("role_arn"), "cloudwatch_exporter").build();
+      return credentialsProvider;
     }
     
     private Region getRegion(Map<String, Object> config) {
-        Region region = RegionUtils.getRegion((String) config.get("region"));
+      Region region = RegionUtils.getRegion((String) config.get("region"));
+      if (region == null) {
+        region = Regions.getCurrentRegion();
         if (region == null) {
-          region = Regions.getCurrentRegion();
-          if (region == null) {
-            throw new IllegalArgumentException("No region provided and EC2 metadata failed");
-          }
+          throw new IllegalArgumentException("No region provided and EC2 metadata failed");
         }
-        return region;
+      }
+      return region;
     }
     
     public String getMonitoringEndpoint(Region region) {
-        return "https://" + region.getServiceEndpoint("monitoring");
+      return "https://" + region.getServiceEndpoint("monitoring");
     }
 
     private List<ResourceTagMapping> getResourceTagMappings(MetricRule rule, AWSResourceGroupsTaggingAPI taggingClient) {
-	List<ResourceTagMapping> resourceTagMappings = new ArrayList<ResourceTagMapping>();
-	if(rule.awsTagSelect == null) {
-            return resourceTagMappings;
-        }
-	
-        List<TagFilter> tagFilters = new ArrayList<TagFilter>();
-        for (Map.Entry<String, List<String>> entry : rule.awsTagSelect.tagSelections.entrySet()) {
-          tagFilters.add(new TagFilter().withKey(entry.getKey()).withValues(entry.getValue()));
-        }
-
-        GetResourcesRequest request = new GetResourcesRequest().withTagFilters(tagFilters).withResourceTypeFilters(rule.awsTagSelect.resourceTypeSelection);
-        String paginationToken = "";
-        do {
-          request.setPaginationToken(paginationToken);
-          
-          GetResourcesResult result = taggingClient.getResources(request);
-          resourceTagMappings.addAll(result.getResourceTagMappingList());
-          
-          paginationToken = result.getPaginationToken();
-        } while (paginationToken != null && paginationToken != "");
-     
+      List<ResourceTagMapping> resourceTagMappings = new ArrayList<ResourceTagMapping>();
+      if (rule.awsTagSelect == null) {
         return resourceTagMappings;
+      }
+
+      List<TagFilter> tagFilters = new ArrayList<TagFilter>();
+      for (Map.Entry<String, List<String>> entry : rule.awsTagSelect.tagSelections.entrySet()) {
+        tagFilters.add(new TagFilter().withKey(entry.getKey()).withValues(entry.getValue()));
+      }
+
+      GetResourcesRequest request = new GetResourcesRequest().withTagFilters(tagFilters).withResourceTypeFilters(rule.awsTagSelect.resourceTypeSelection);
+      String paginationToken = "";
+      do {
+        request.setPaginationToken(paginationToken);
+
+        GetResourcesResult result = taggingClient.getResources(request);
+        resourceTagMappings.addAll(result.getResourceTagMappingList());
+
+        paginationToken = result.getPaginationToken();
+      } while (paginationToken != null && paginationToken != "");
+
+      return resourceTagMappings;
     }
     
     private List<String> extractResourceIds(List<ResourceTagMapping> resourceTagMappings) {
-	List<String> resourceIds = new ArrayList<String>();
-	for (ResourceTagMapping resourceTagMapping : resourceTagMappings) {
-	    resourceIds.add(extractResourceId(resourceTagMapping.getResourceARN()));
-	}
-	return resourceIds;
+      List<String> resourceIds = new ArrayList<String>();
+      for (ResourceTagMapping resourceTagMapping : resourceTagMappings) {
+        resourceIds.add(extractResourceId(resourceTagMapping.getResourceARN()));
+      }
+      return resourceIds;
     }
     
-    private String extractResourceId(String arn) {
-	// ARN parsing is based on https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html
-	String[] arnArray = arn.split(":");
-	String resourceId = arnArray[arnArray.length-1];
-	if(resourceId.contains("/")) {
-	    String[] resourceArray = resourceId.split("/", 2);
-	    resourceId = resourceArray[resourceArray.length-1];
-	}
-
-	return resourceId;
+  private String extractResourceId(String arn) {
+    // ARN parsing is based on https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html
+    String[] arnArray = arn.split(":");
+    String resourceId = arnArray[arnArray.length - 1];
+    if (resourceId.contains("/")) {
+      String[] resourceArray = resourceId.split("/", 2);
+      resourceId = resourceArray[resourceArray.length - 1];
     }
+
+    return resourceId;
+  }
     
     private List<List<Dimension>> getDimensions(MetricRule rule, List<String> tagBasedResourceIds, AmazonCloudWatch cloudWatchClient) {
         if (
@@ -410,7 +407,7 @@ public class CloudWatchCollector extends Collector {
         return true;
       }
       if (rule.awsTagSelect != null  && metricIsInAwsTagSelect(rule, tagBasedResourceIds, metric)) {
-	return true;
+        return true;
       }
       return false;
     }
