@@ -68,20 +68,15 @@ public class CloudWatchCollector extends Collector {
       List<String> awsDimensions;
       Map<String,List<String>> awsDimensionSelect;
       Map<String,List<String>> awsDimensionSelectRegex;
+      AWSTagSelect awsTagSelect;
       String help;
       boolean cloudwatchTimestamp;
-      AWSTagSelect awsTagSelect;
     }
 
     static class AWSTagSelect {
       String resourceTypeSelection;
       String resourceIdDimension;
-      List<TagSelection> tagSelections;
-    }
-
-    static class TagSelection {
-      String key;
-      List<String> values;
+      Map<String,List<String>> tagSelections;
     }
     
     ActiveConfig activeConfig = new ActiveConfig();
@@ -245,18 +240,7 @@ public class CloudWatchCollector extends Collector {
 
             awsTagSelect.resourceTypeSelection = (String)yamlAwsTagSelect.get("resource_type_selection");
             awsTagSelect.resourceIdDimension = (String)yamlAwsTagSelect.get("resource_id_dimension");
-            List<TagSelection> tagSelections = new ArrayList<TagSelection>();
-            awsTagSelect.tagSelections = tagSelections;
-
-            for (Map<String,Object> yamlTagSelection : (List<Map<String,Object>>) yamlAwsTagSelect.get("tag_selections")) {
-              if (!yamlTagSelection.containsKey("key") || !yamlTagSelection.containsKey("values")) {
-                throw new IllegalArgumentException("Must provide key and values for tag_selections");
-              }
-              TagSelection tagSelection = new TagSelection();
-              tagSelection.key = (String)yamlTagSelection.get("key");
-              tagSelection.values = (List<String>)yamlTagSelection.get("values");
-              tagSelections.add(tagSelection);
-            }
+            awsTagSelect.tagSelections = (Map<String, List<String>>)yamlAwsTagSelect.get("tag_selections");
           }
         }
 
@@ -301,10 +285,10 @@ public class CloudWatchCollector extends Collector {
         }
 	
         List<TagFilter> tagFilters = new ArrayList<TagFilter>();
-        for (TagSelection tagSelection : rule.awsTagSelect.tagSelections) {
-            tagFilters.add(new TagFilter().withKey(tagSelection.key).withValues(tagSelection.values));
+        for (Map.Entry<String, List<String>> entry : rule.awsTagSelect.tagSelections.entrySet()) {
+          tagFilters.add(new TagFilter().withKey(entry.getKey()).withValues(entry.getValue()));
         }
-        
+
         GetResourcesRequest request = new GetResourcesRequest().withTagFilters(tagFilters).withResourceTypeFilters(rule.awsTagSelect.resourceTypeSelection);
         String paginationToken = "";
         do {
@@ -335,6 +319,7 @@ public class CloudWatchCollector extends Collector {
 	    String[] resourceArray = resourceId.split("/", 2);
 	    resourceId = resourceArray[resourceArray.length-1];
 	}
+
 	return resourceId;
     }
     
