@@ -466,7 +466,7 @@ public class CloudWatchCollector extends Collector {
       for (Dimension dimension : metric.getDimensions()) {
         String dimensionName = dimension.getName();
         String dimensionValue = dimension.getValue();
-        if (dimensionName.equals(rule.awsTagSelect.resourceIdDimension)) {
+        if (rule.awsTagSelect.resourceIdDimension.equals(dimensionName)) {
           if (!tagBasedResourceIds.contains(dimensionValue)) {
             return false;
           }
