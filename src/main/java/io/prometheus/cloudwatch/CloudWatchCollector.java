@@ -7,11 +7,17 @@ import com.amazonaws.services.cloudwatch.AmazonCloudWatchClientBuilder;
 import com.amazonaws.services.cloudwatch.model.Datapoint;
 import com.amazonaws.services.cloudwatch.model.Dimension;
 import com.amazonaws.services.cloudwatch.model.DimensionFilter;
+import com.amazonaws.services.cloudwatch.model.GetMetricDataRequest;
+import com.amazonaws.services.cloudwatch.model.GetMetricDataResult;
 import com.amazonaws.services.cloudwatch.model.GetMetricStatisticsRequest;
 import com.amazonaws.services.cloudwatch.model.GetMetricStatisticsResult;
 import com.amazonaws.services.cloudwatch.model.ListMetricsRequest;
 import com.amazonaws.services.cloudwatch.model.ListMetricsResult;
 import com.amazonaws.services.cloudwatch.model.Metric;
+import com.amazonaws.services.cloudwatch.model.MetricDataQuery;
+import com.amazonaws.services.cloudwatch.model.MetricDataResult;
+import com.amazonaws.services.cloudwatch.model.MetricStat;
+import com.amazonaws.services.cloudwatch.model.ScanBy;
 import com.amazonaws.services.resourcegroupstaggingapi.AWSResourceGroupsTaggingAPI;
 import com.amazonaws.services.resourcegroupstaggingapi.AWSResourceGroupsTaggingAPIClientBuilder;
 import com.amazonaws.services.resourcegroupstaggingapi.model.GetResourcesRequest;
@@ -22,6 +28,8 @@ import com.amazonaws.services.resourcegroupstaggingapi.model.TagFilter;
 
 import io.prometheus.client.Collector;
 import io.prometheus.client.Collector.Describable;
+import io.prometheus.client.Collector.MetricFamilySamples;
+import io.prometheus.client.Collector.Type;
 import io.prometheus.client.Counter;
 
 import java.io.FileReader;
@@ -70,6 +78,18 @@ public class CloudWatchCollector extends Collector implements Describable {
       AWSTagSelect awsTagSelect;
       String help;
       boolean cloudwatchTimestamp;
+      
+      List<String> allStats() {
+        List<String> stats = new ArrayList<String>();
+        if (this.awsStatistics != null) {
+          stats.addAll(this.awsStatistics);
+        }
+        if (this.awsExtendedStatistics != null) {
+          stats.addAll(this.awsExtendedStatistics);
+        }
+        return stats;
+      }
+      
     }
 
     static class AWSTagSelect {
@@ -517,7 +537,196 @@ public class CloudWatchCollector extends Collector implements Describable {
           + " Unit: " + unit;
     }
 
+    
+    private static String queryId(MetricRule rule, List<Dimension> dimensions, String stat) {
+      String idComponents = rule.awsNamespace +
+              rule.awsMetricName +
+              dimensions.hashCode() +
+              stat;
+      // We cant't use the concatenated components as the ID directly because AWS will not accept special chars as ID
+      // Also, the ID must start with a letter, not a digit
+      return "q" + Integer.toUnsignedString(idComponents.hashCode());
+    }
+    
+    private static MetricDataQuery metricDataQuery(MetricRule rule, List<Dimension> dimensions, String stat) {
+      Metric metric = new Metric()
+              .withMetricName(rule.awsMetricName)
+              .withNamespace(rule.awsNamespace)
+              .withDimensions(dimensions);
+
+      MetricStat metricStat = new MetricStat()
+              .withMetric(metric)
+              .withPeriod(rule.periodSeconds)
+              .withStat(stat);
+
+      return new MetricDataQuery()
+              .withId(queryId(rule, dimensions, stat))
+              .withMetricStat(metricStat);
+    }
+    
+    private static List<MetricDataQuery> queriesForRuleDimensions(MetricRule rule, List<Dimension> dimensions) {
+      List<MetricDataQuery> queries = new ArrayList<MetricDataQuery>();
+
+      for (String stat : rule.allStats()) {
+        queries.add(metricDataQuery(rule, dimensions, stat));
+      }
+
+      return queries;
+    }
+    
+    private List<GetMetricDataRequest> requestForRule(MetricRule rule, ActiveConfig config, long start) {
+      Date startDate = new Date(start - 1000 * (rule.delaySeconds + rule.rangeSeconds));
+      Date endDate = new Date(start - 1000 * rule.delaySeconds);
+
+      List<GetMetricDataRequest> requests = new ArrayList<GetMetricDataRequest>();
+      List<MetricDataQuery> queries = new ArrayList<MetricDataQuery>();
+
+      List<ResourceTagMapping> resourceTagMappings = getResourceTagMappings(rule, config.taggingClient);
+      List<String> tagBasedResourceIds = extractResourceIds(resourceTagMappings);
+      
+      for (List<Dimension> dimensions : getDimensions(rule, tagBasedResourceIds, config.cloudWatchClient)) {
+        queries.addAll(queriesForRuleDimensions(rule, dimensions));
+      }
+
+      // GetMetricData will not accept more than 100 queries per request
+      int partitionSize = 100;
+      List<List<MetricDataQuery>> queryPartitions = new ArrayList<List<MetricDataQuery>>();
+      for (int i=0; i<queries.size(); i += partitionSize) {
+	queryPartitions.add(queries.subList(i, Math.min(i + partitionSize, queries.size())));
+      }
+      
+      for (List<MetricDataQuery> queryPartition : queryPartitions) {
+        GetMetricDataRequest request = new GetMetricDataRequest()
+                .withStartTime(startDate)
+                .withEndTime(endDate)
+                .withScanBy(ScanBy.TimestampDescending);
+
+        request.setMetricDataQueries(queryPartition);
+        requests.add(request);
+      }
+
+      return requests;
+    }
+    
+    private Map<String, MetricDataResult> fetchMetricDataResults(ActiveConfig config, long start) {
+      Map<String, MetricDataResult> idsToResults = new HashMap<String, MetricDataResult>();
+      for (MetricRule rule : config.rules) {
+        final List<GetMetricDataRequest> getMetricDataRequests = requestForRule(rule, config, start);
+        for (GetMetricDataRequest request : getMetricDataRequests) {
+          if (request == null) {
+          } else {
+            String nextToken = null;
+            do {
+              request.setNextToken(nextToken);
+              cloudwatchRequests.labels("getMetricData", rule.awsNamespace).inc();
+              GetMetricDataResult getResult = config.cloudWatchClient.getMetricData(request);
+              for (MetricDataResult result : getResult.getMetricDataResults()) {
+                idsToResults.put(result.getId(), result);
+              }
+              nextToken = getResult.getNextToken();
+            } while (nextToken != null);
+          }
+        }
+      }
+      return idsToResults;
+    }
+    
     private void scrape(List<MetricFamilySamples> mfs) throws CloneNotSupportedException {
+      ActiveConfig config = (ActiveConfig) activeConfig.clone();
+      Set<String> publishedResourceInfo = new HashSet<String>();
+
+      long start = System.currentTimeMillis();
+
+      Map<String, MetricDataResult> idsToMetricData = fetchMetricDataResults(config, start);
+
+      for (MetricRule rule : config.rules) {
+        Map<String, List<MetricFamilySamples.Sample>> statsTypeToSamples =
+                new HashMap<String, List<MetricFamilySamples.Sample>>();
+
+        String jobName = safeName(rule.awsNamespace.toLowerCase());
+        String baseName = safeName(rule.awsNamespace.toLowerCase() + "_" + toSnakeCase(rule.awsMetricName));
+
+        if (rule.awsNamespace.equals("AWS/DynamoDB")
+            && rule.awsDimensions != null
+            && rule.awsDimensions.contains("GlobalSecondaryIndexName")
+            && brokenDynamoMetrics.contains(rule.awsMetricName)) {
+          baseName += "_index";
+        }
+
+        // TODO avoid calling these multiple time: getResourceTagMappings, getDimensions.
+        // Refactor code to return a complete object collection instead of idsToMetricData
+        List<ResourceTagMapping> resourceTagMappings = getResourceTagMappings(rule, config.taggingClient);
+        List<String> tagBasedResourceIds = extractResourceIds(resourceTagMappings);
+        
+        for (List<Dimension> dimensions : getDimensions(rule, tagBasedResourceIds, config.cloudWatchClient)) {
+          List<String> labelNames = new ArrayList<String>();
+          List<String> labelValues = new ArrayList<String>();
+          labelNames.add("job");
+          labelValues.add(jobName);
+          labelNames.add("instance");
+          labelValues.add("");
+
+          for (Dimension d : dimensions) {
+            labelNames.add(safeName(toSnakeCase(d.getName())));
+            labelValues.add(d.getValue());
+          }
+
+          for (String stat : rule.allStats()) {
+            MetricDataResult result = idsToMetricData.get(queryId(rule, dimensions, stat));
+            if (result == null|| result.getValues().isEmpty()||result.getTimestamps().isEmpty()) {
+              continue;
+            }
+
+            MetricFamilySamples.Sample sample = new MetricFamilySamples.Sample(
+                    baseName + "_" + safeName(stat).toLowerCase(),
+                    labelNames, labelValues,
+                    result.getValues().get(0), result.getTimestamps().get(0).getTime()
+            );
+
+
+            if (statsTypeToSamples.get(stat) == null) {
+              statsTypeToSamples.put(stat, new ArrayList<MetricFamilySamples.Sample>());
+            }
+            statsTypeToSamples.get(stat).add(sample);
+          }
+        }
+
+        for (String statType : statsTypeToSamples.keySet()) {
+          mfs.add(new MetricFamilySamples(baseName + "_" + safeName(statType).toLowerCase(),
+                  Type.GAUGE, help(rule, "UNKNOWN", "Sum"), statsTypeToSamples.get(statType))
+          );
+        }
+        
+        // Add the "aws_resource_info" metric for existing tag mappings
+        for (ResourceTagMapping resourceTagMapping : resourceTagMappings) {
+          if (!publishedResourceInfo.contains(resourceTagMapping.getResourceARN())) {
+            List<String> labelNames = new ArrayList<String>();
+            List<String> labelValues = new ArrayList<String>();
+            labelNames.add("job");
+            labelValues.add(jobName);
+            labelNames.add("instance");
+            labelValues.add("");
+            labelNames.add("arn");
+            labelValues.add(resourceTagMapping.getResourceARN());
+            labelNames.add(safeLabelName(toSnakeCase(rule.awsTagSelect.resourceIdDimension)));
+            labelValues.add(extractResourceIdFromArn(resourceTagMapping.getResourceARN()));
+            for (Tag tag: resourceTagMapping.getTags()) {
+              // Avoid potential collision between resource tags and other metric labels by adding the "tag_" prefix
+              // The AWS tags are case sensitive, so to avoid loosing information and label collisions, tag keys are not snaked cased
+              labelNames.add("tag_" + safeLabelName(tag.getKey()));
+              labelValues.add(tag.getValue());
+            }
+            List<MetricFamilySamples.Sample> samples = new ArrayList<MetricFamilySamples.Sample>();
+            samples.add(new MetricFamilySamples.Sample("aws_resource_info", labelNames, labelValues, 1));
+            mfs.add(new MetricFamilySamples("aws_resource_info", Type.GAUGE, "AWS information available for resource", samples));
+            
+            publishedResourceInfo.add(resourceTagMapping.getResourceARN());
+          }
+        }
+      }
+    }
+    
+    private void scrapeOld(List<MetricFamilySamples> mfs) throws CloneNotSupportedException {
       ActiveConfig config = (ActiveConfig) activeConfig.clone();
       Set<String> publishedResourceInfo = new HashSet<String>();
 
@@ -533,7 +742,8 @@ public class CloudWatchCollector extends Collector implements Describable {
         request.setEndTime(startDate);
         request.setStartTime(endDate);
         request.setPeriod(rule.periodSeconds);
-
+        
+        
         String baseName = safeName(rule.awsNamespace.toLowerCase() + "_" + toSnakeCase(rule.awsMetricName));
         String jobName = safeName(rule.awsNamespace.toLowerCase());
         List<MetricFamilySamples.Sample> sumSamples = new ArrayList<MetricFamilySamples.Sample>();
